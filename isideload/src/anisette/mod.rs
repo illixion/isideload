@@ -11,6 +11,19 @@ use tokio::sync::RwLock;
 use tracing::warn;
 use web_time::SystemTime;
 
+/// The device a sign-in claims to be (`X-Mme-Client-Info`) when its anisette comes from Apple
+/// Music's Android libraries, which is what anisette-v3 servers run. Since 2026-10-12 Apple
+/// refuses a sign-in (-80045, "This action cannot be completed at this time") whose claimed
+/// platform doesn't match the anisette's: Android anisette claiming a Mac, Windows or an iPhone
+/// is refused. Only the platform part is checked, not the program named at the end.
+pub const ANDROID_CLIENT_INFO: &str =
+    "<Pixel 8><Android; 14; UQ1A.240205.004><com.apple.AuthKit/1 (com.apple.android.music/4.9.6)>";
+
+/// What Dadoum's anisette-v3-server reports in `/v3/client_info`, whatever it serves. Its anisette
+/// is Android's (see [`ANDROID_CLIENT_INFO`]), so this claim is replaced with Android's.
+pub const DADOUM_CLIENT_INFO: &str =
+    "<MacBookPro13,2> <macOS;13.1;22C65> <com.apple.AuthKit/1 (com.apple.akd/1.0)>";
+
 #[derive(Deserialize, Debug, Clone)]
 pub struct AnisetteClientInfo {
     pub client_info: String,

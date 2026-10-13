@@ -37,6 +37,9 @@ pub struct AppleAccount {
     debug: bool,
     last_error: Option<String>,
     err_429_retries: Option<u32>,
+    /// This login has asked for the code Apple pushes to the trusted devices without a 2FA step
+    /// (see [`AppleAccount::needs_pushed_code`]).
+    pushed_code_asked: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -175,6 +178,7 @@ impl AppleAccount {
             trusted_phone_numbers: None,
             last_error: None,
             err_429_retries,
+            pushed_code_asked: false,
         })
     }
 
@@ -206,6 +210,7 @@ impl AppleAccount {
             .context("Failed to log in to Apple ID")?;
 
         debug!("Initial login successful");
+        self.pushed_code_asked = false;
 
         let mut attempts = 0;
 
@@ -219,6 +224,16 @@ impl AppleAccount {
             }
             match self.login_state.clone() {
                 LoginState::LoggedIn => {
+                    if !self.pushed_code_asked && self.needs_pushed_code().await {
+                        // The code is already on its way to the trusted devices: check it
+                        // (validateCode alone), then sign in again with the session trusted.
+                        info!(
+                            "Apple wants the code sent to your devices before it gives out tokens"
+                        );
+                        self.pushed_code_asked = true;
+                        self.login_state = LoginState::NeedsDevice2FAVerification;
+                        continue;
+                    }
                     info!("Successfully logged in to Apple ID");
                     return Ok(());
                 }
@@ -253,7 +268,13 @@ impl AppleAccount {
                         }
                         TwoFactorCallbackResponse::SendToDevices
                         | TwoFactorCallbackResponse::ResendCode => {
-                            self.login_state = LoginState::NeedsDevice2FA;
+                            if self.pushed_code_asked {
+                                // Signing in again is what pushes a new code here.
+                                self.pushed_code_asked = false;
+                                self.login_state = LoginState::NeedsLogin;
+                            } else {
+                                self.login_state = LoginState::NeedsDevice2FA;
+                            }
                         }
                         TwoFactorCallbackResponse::Abort => {
                             bail!("No 2FA code provided, aborting")
@@ -918,6 +939,33 @@ impl AppleAccount {
         }
 
         Ok(LoginState::LoggedIn)
+    }
+
+    /// Whether Apple holds back tokens until the code it pushed to the trusted devices is checked.
+    ///
+    /// A sign-in claiming Android (see [`crate::anisette::ANDROID_CLIENT_INFO`]) from an anisette
+    /// identity Apple doesn't trust yet gets no 2FA step, but Apple still pushes a code, and
+    /// `apptokens` answers -22411 ("This action cannot be completed at this time") until that
+    /// code is checked. The usual trusted-device 2FA requests answer 401 for such a session, so
+    /// the code is checked with `validateCode` alone. Once trusted, later sign-ins need no code.
+    async fn needs_pushed_code(&mut self) -> bool {
+        if !self
+            .grandslam_client
+            .client_info
+            .client_info
+            .contains("<Android;")
+        {
+            return false;
+        }
+        match self.get_app_token("xcode.auth").await {
+            Ok(_) => false,
+            Err(report) => report.iter_reports().any(|cause| {
+                matches!(
+                    cause.downcast_current_context::<SideloadError>(),
+                    Some(SideloadError::AuthWithMessage(-22411, _))
+                )
+            }),
+        }
     }
 
     pub async fn get_app_token(&mut self, app: &str) -> Result<AppToken, Report> {

@@ -17,7 +17,9 @@ use serde::Deserialize;
 use tracing::{debug, info, warn};
 
 use crate::anisette::remote_v3::{state::AnisetteState, websocket::WsMessage};
-use crate::anisette::{AnisetteClientInfo, AnisetteData, AnisetteProvider};
+use crate::anisette::{
+    ANDROID_CLIENT_INFO, AnisetteClientInfo, AnisetteData, AnisetteProvider, DADOUM_CLIENT_INFO,
+};
 use crate::auth::grandslam::GrandSlam;
 use crate::util::plist::PlistDataExtract;
 use crate::util::storage::{SideloadingStorage, new_storage};
@@ -127,6 +129,15 @@ impl AnisetteProvider for RemoteV3AnisetteProvider {
             .json::<AnisetteClientInfo>()
             .await
             .context("Failed to parse /v3/client_info response")?;
+        // Dadoum's anisette-v3-server (and the servers built from it) always reports this Mac,
+        // but its anisette comes from Apple Music's Android libraries, so claiming the Mac it
+        // names is refused (-80045). Claim the platform the anisette really comes from.
+        if info.client_info == DADOUM_CLIENT_INFO {
+            return Ok(AnisetteClientInfo {
+                client_info: ANDROID_CLIENT_INFO.to_string(),
+                ..info
+            });
+        }
         Ok(info)
     }
 
